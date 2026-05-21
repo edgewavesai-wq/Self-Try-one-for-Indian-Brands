@@ -3,106 +3,97 @@ import { buildPrompt } from '@/lib/prompt-builder';
 
 export const maxDuration = 60;
 
-async function fileToBase64(file: File): Promise<string> {
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  return buffer.toString('base64');
+async function fileToBlob(file: File): Promise<Blob> {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return new Blob([buffer], { type: file.type || 'image/jpeg' });
 }
 
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const userPhoto = formData.get('userPhoto') as File | null;
+    const fabricPhoto = formData.get('fabricPhoto') as File | null;
+    const styleRefPhoto = formData.get('styleRefPhoto') as File | null;
     const selectionsRaw = formData.get('selections') as string;
 
-    if (!userPhoto) {
-      return NextResponse.json({ error: 'User photo is required' }, { status: 400 });
-    }
-
-    if (!selectionsRaw) {
-      return NextResponse.json({ error: 'Selections are required' }, { status: 400 });
-    }
+    if (!userPhoto) return NextResponse.json({ error: 'User photo is required' }, { status: 400 });
+    if (!selectionsRaw) return NextResponse.json({ error: 'Selections are required' }, { status: 400 });
 
     const selections = JSON.parse(selectionsRaw);
     const prompt = buildPrompt(selections);
 
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: 'OpenAI API key not configured' }, { status: 500 });
-    }
+    if (!apiKey) return NextResponse.json({ error: 'OpenAI API key not configured' }, { status: 500 });
 
-    // Convert user photo to base64
-    const userPhotoBase64 = await fileToBase64(userPhoto);
-    const userPhotoMediaType = userPhoto.type || 'image/jpeg';
+    // Build multipart form for images/edits — send reference images in order:
+    // [0] person photo (always), [1] fabric reference (if provided), [2] style reference (if provided)
+    const editForm = new FormData();
+    editForm.append('image[]', await fileToBlob(userPhoto), 'person.jpg');
+    if (fabricPhoto) editForm.append('image[]', await fileToBlob(fabricPhoto), 'fabric.jpg');
+    if (styleRefPhoto) editForm.append('image[]', await fileToBlob(styleRefPhoto), 'style.jpg');
+    editForm.append('prompt', prompt);
+    editForm.append('model', 'gpt-image-1');
+    editForm.append('n', '1');
+    editForm.append('size', '1024x1536');
+    if (selections.quality) editForm.append('quality', selections.quality);
 
-    // Use the images/edits endpoint for image+prompt → new image
-    // Build a multipart form for the edits API
-    const editFormData = new FormData();
-
-    // Convert base64 back to blob for the API
-    const userPhotoBlob = new Blob(
-      [Buffer.from(userPhotoBase64, 'base64')],
-      { type: userPhotoMediaType }
-    );
-    editFormData.append('image', userPhotoBlob, 'user-photo.jpg');
-    editFormData.append('prompt', prompt);
-    editFormData.append('model', 'gpt-image-1');
-    editFormData.append('n', '1');
-    editFormData.append('size', '1024x1536');
-
-    const response = await fetch('https://api.openai.com/v1/images/edits', {
+    const editRes = await fetch('https://api.openai.com/v1/images/edits', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: editFormData,
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: editForm,
     });
 
-    // Fallback to generations endpoint if edits fails
-    if (!response.ok) {
-      const genResponse = await fetch('https://api.openai.com/v1/images/generations', {
+    // Fallback to generations endpoint if edits fails (e.g. format mismatch)
+    if (!editRes.ok) {
+      const genRes = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model: 'gpt-image-1',
-          prompt: prompt,
+          prompt,
           n: 1,
           size: '1024x1536',
           quality: selections.quality || 'medium',
         }),
       });
 
-      const genData = await genResponse.json();
-
-      if (!genResponse.ok) {
+      const genData = await genRes.json();
+      if (!genRes.ok) {
         return NextResponse.json(
           { error: genData.error?.message || 'Generation failed' },
-          { status: genResponse.status }
+          { status: genRes.status },
         );
       }
 
-      const imageData = genData.data?.[0];
       return NextResponse.json({
-        image: imageData?.url || (imageData?.b64_json ? `data:image/png;base64,${imageData.b64_json}` : null),
+        image: extractImage(genData.data?.[0]),
         prompt,
-        cost: selections.quality === 'low' ? 0.006 : selections.quality === 'high' ? 0.211 : 0.053,
+        cost: costFor(selections.quality),
       });
     }
 
-    const data = await response.json();
-    const imageData = data.data?.[0];
-
+    const editData = await editRes.json();
     return NextResponse.json({
-      image: imageData?.url || (imageData?.b64_json ? `data:image/png;base64,${imageData.b64_json}` : null),
+      image: extractImage(editData.data?.[0]),
       prompt,
-      cost: selections.quality === 'low' ? 0.006 : selections.quality === 'high' ? 0.211 : 0.053,
+      cost: costFor(selections.quality),
     });
   } catch (error: unknown) {
     console.error('Generate error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Internal server error';
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 },
+    );
   }
+}
+
+function extractImage(item: { url?: string; b64_json?: string } | undefined): string | null {
+  if (!item) return null;
+  return item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : null);
+}
+
+function costFor(quality?: string): number {
+  if (quality === 'low') return 0.006;
+  if (quality === 'high') return 0.211;
+  return 0.053;
 }

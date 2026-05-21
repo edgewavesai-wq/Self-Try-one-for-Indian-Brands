@@ -63,8 +63,13 @@ export default function DetailCustomizer({ selections, onChange }: Props) {
   return (
     <div className="space-y-8">
       <div>
-        <h2 className="font-playfair text-3xl font-bold text-navy mb-2">Customize Details</h2>
-        <p className="text-charcoal/60 text-sm">Fine-tune the neckline, sleeves, and embellishments</p>
+        <div className="flex items-center gap-3 mb-2">
+          <h2 className="font-playfair text-3xl font-bold text-navy">Customize Details</h2>
+          <span className="px-2 py-0.5 rounded-full bg-gold/15 text-gold text-xs font-medium border border-gold/30">
+            Optional
+          </span>
+        </div>
+        <p className="text-charcoal/60 text-sm">Fine-tune the neckline, sleeves, and embellishments — or skip to generate</p>
       </div>
 
       <OptionGrid

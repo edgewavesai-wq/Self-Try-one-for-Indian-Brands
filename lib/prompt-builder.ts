@@ -7,28 +7,40 @@ export interface Selections {
   fabricName: string;
   bottomWear?: string;
   quality?: 'low' | 'medium' | 'high';
+  hasFabricPhoto?: boolean;
+  hasStyleRefPhoto?: boolean;
 }
 
 export function buildPrompt(selections: Selections): string {
-  return `TASK: Generate a photorealistic fashion photograph of the person from the reference photo wearing a custom-designed Indian kurta.
+  const imageCount = 1 + (selections.hasFabricPhoto ? 1 : 0) + (selections.hasStyleRefPhoto ? 1 : 0);
+
+  const fabricLine = selections.hasFabricPhoto
+    ? `- Fabric: Reproduce the exact fabric texture, weave, pattern, and colour shown in image ${imageCount === 3 ? 2 : 2} (fabric reference)`
+    : `- Fabric: ${selections.fabricPrompt}`;
+
+  const styleLine = selections.hasStyleRefPhoto
+    ? `- Style: Faithfully replicate the kurta silhouette, cut, and drape shown in the style reference image (last uploaded image)`
+    : `- Style: ${selections.kurtaStyle.promptKeywords}`;
+
+  return `TASK: Generate a photorealistic fashion photograph of the person from image 1 (the person reference) wearing a custom-designed Indian kurta.
 
 CRITICAL INSTRUCTIONS:
-- The person's FACE, BODY TYPE, SKIN TONE, and HAIR must match the reference photo EXACTLY
-- The person should be standing in a natural, confident pose
+- The person's FACE, BODY TYPE, SKIN TONE, and HAIR must match image 1 EXACTLY
+- Natural, confident standing pose
 - Studio lighting, neutral grey/cream background
 - Fashion editorial photography style, sharp focus, 85mm lens, soft shadows
 - Full body or 3/4 body shot, portrait orientation
 - Single person only, no other people in frame
 
 KURTA DESIGN SPECIFICATIONS:
-- Style: ${selections.kurtaStyle.promptKeywords}
+${styleLine}
 - Neckline: ${selections.neckline.prompt}
 - Sleeves: ${selections.sleeve.prompt}
-- Fabric: ${selections.fabricPrompt}
+${fabricLine}
 - Embellishment: ${selections.embellishment.prompt}
 - Bottom wear: ${selections.bottomWear || 'matching churidar pants'}
 
-The kurta should look TAILORED and FITTED to the person's body. The fabric texture, draping, and embellishments must look photorealistic and physically accurate. Fabric drapes naturally with realistic folds and shadows.`.trim();
+The kurta must look TAILORED and FITTED to the person's body. Fabric texture, draping, and embellishments must be photorealistic and physically accurate with natural folds and shadows.`.trim();
 }
 
 export function getCostEstimate(quality: 'low' | 'medium' | 'high'): number {

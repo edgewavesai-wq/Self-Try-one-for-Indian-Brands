@@ -14,6 +14,9 @@ import { KURTA_STYLES, type KurtaStyle } from '@/data/kurta-styles';
 import { NECKLINES } from '@/data/necklines';
 import { SLEEVES } from '@/data/sleeves';
 import { EMBELLISHMENTS } from '@/data/embellishments';
+import { compressImage } from '@/lib/utils';
+
+type FabricTab = 'preset' | 'upload' | 'custom';
 
 const STEPS = [
   { id: 1, label: 'Photo', title: 'Upload Photo' },
@@ -26,18 +29,35 @@ const STEPS = [
 function CreateStudio() {
   const searchParams = useSearchParams();
   const [step, setStep] = useState(1);
+
+  // Step 1 — person photo
   const [userPhoto, setUserPhoto] = useState<File | null>(null);
-  const [photoPreview, setPhotoPreview] = useState<string>('');
+  const [photoPreview, setPhotoPreview] = useState('');
+
+  // Step 2 — fabric
+  const [fabricTab, setFabricTab] = useState<FabricTab>('preset');
   const [fabricId, setFabricId] = useState<string | null>(null);
   const [fabricPrompt, setFabricPrompt] = useState('');
   const [fabricName, setFabricName] = useState('');
+  const [fabricPhoto, setFabricPhoto] = useState<File | null>(null);
+  const [fabricPhotoPreview, setFabricPhotoPreview] = useState('');
+  const [customColor, setCustomColor] = useState('');
+  const [customColorName, setCustomColorName] = useState('');
+
+  // Step 3 — style
   const [kurtaStyle, setKurtaStyle] = useState<KurtaStyle | null>(null);
+  const [styleRefPhoto, setStyleRefPhoto] = useState<File | null>(null);
+  const [styleRefPreview, setStyleRefPreview] = useState('');
+
+  // Step 4 — details
   const [details, setDetails] = useState({
     necklineId: 'mandarin' as string | null,
     sleeveId: 'full' as string | null,
     embellishmentId: 'none' as string | null,
     bottomWear: 'churidar',
   });
+
+  // Generation
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,8 +73,20 @@ function CreateStudio() {
     }
   }, [searchParams]);
 
+  // Derived fabric info based on active tab
+  const activeFabricPrompt =
+    fabricTab === 'preset' ? fabricPrompt :
+    fabricTab === 'upload' ? 'fabric from reference photo' :
+    customColorName ? `${customColorName} coloured fabric` :
+    customColor ? `${customColor} coloured fabric` : '';
+
+  const activeFabricName =
+    fabricTab === 'preset' ? fabricName :
+    fabricTab === 'upload' ? (fabricPhoto?.name || 'Uploaded Fabric') :
+    customColorName || (customColor ? 'Custom Colour' : '');
+
   const handleGenerate = async (quality: 'low' | 'medium' | 'high') => {
-    if (!userPhoto || !kurtaStyle) return;
+    if (!userPhoto) return;
     setIsLoading(true);
     setError(null);
     setResult(null);
@@ -65,34 +97,38 @@ function CreateStudio() {
       const embellishment = EMBELLISHMENTS.find((e) => e.id === details.embellishmentId) || EMBELLISHMENTS[0];
 
       const selections = {
-        kurtaStyle,
+        kurtaStyle: kurtaStyle || { promptKeywords: 'classic straight kurta', name: 'Classic Kurta' },
         neckline,
         sleeve,
         embellishment,
-        fabricPrompt: fabricPrompt || 'white cotton fabric',
-        fabricName: fabricName || 'White Cotton',
+        fabricPrompt: activeFabricPrompt || 'white cotton fabric',
+        fabricName: activeFabricName || 'White Cotton',
         bottomWear: details.bottomWear,
         quality,
+        hasFabricPhoto: fabricTab === 'upload' && !!fabricPhoto,
+        hasStyleRefPhoto: !!styleRefPhoto,
       };
 
+      // Compress images before upload to reduce API payload and cost
+      const [compressedPerson, compressedFabric, compressedStyle] = await Promise.all([
+        compressImage(userPhoto, 1024, 1536, 0.85),
+        fabricTab === 'upload' && fabricPhoto ? compressImage(fabricPhoto, 512, 512, 0.80) : Promise.resolve(null),
+        styleRefPhoto ? compressImage(styleRefPhoto, 768, 1024, 0.80) : Promise.resolve(null),
+      ]);
+
       const formData = new FormData();
-      formData.append('userPhoto', userPhoto);
+      formData.append('userPhoto', compressedPerson);
       formData.append('selections', JSON.stringify(selections));
+      if (compressedFabric) formData.append('fabricPhoto', compressedFabric);
+      if (compressedStyle) formData.append('styleRefPhoto', compressedStyle);
 
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        body: formData,
-      });
-
+      const response = await fetch('/api/generate', { method: 'POST', body: formData });
       const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Generation failed');
-      }
+      if (!response.ok) throw new Error(data.error || 'Generation failed');
 
       setResult(data.image);
 
-      // Save to local storage gallery
       try {
         const saved = JSON.parse(localStorage.getItem('ethnicfit-generations') || '[]');
         saved.push({
@@ -101,16 +137,15 @@ function CreateStudio() {
           prompt: data.prompt,
           cost: data.cost,
           timestamp: Date.now(),
-          style: kurtaStyle.name,
-          fabric: fabricName,
+          style: selections.kurtaStyle.name,
+          fabric: activeFabricName,
         });
         localStorage.setItem('ethnicfit-generations', JSON.stringify(saved));
       } catch {
         // ignore storage errors
       }
     } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Something went wrong';
-      setError(errorMessage);
+      setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setIsLoading(false);
     }
@@ -118,9 +153,13 @@ function CreateStudio() {
 
   const canGoNext = () => {
     if (step === 1) return !!userPhoto;
-    if (step === 2) return !!fabricId;
-    if (step === 3) return !!kurtaStyle;
-    return true;
+    if (step === 2) {
+      return (fabricTab === 'preset' && !!fabricId) ||
+             (fabricTab === 'upload' && !!fabricPhoto) ||
+             (fabricTab === 'custom' && !!(customColor || customColorName));
+    }
+    if (step === 3) return !!kurtaStyle || !!styleRefPhoto;
+    return true; // steps 4 and 5 are always passable
   };
 
   const neckline = NECKLINES.find((n) => n.id === details.necklineId) || NECKLINES[0];
@@ -132,8 +171,8 @@ function CreateStudio() {
     neckline,
     sleeve,
     embellishment,
-    fabricPrompt,
-    fabricName,
+    fabricPrompt: activeFabricPrompt,
+    fabricName: activeFabricName,
     bottomWear: details.bottomWear,
   };
 
@@ -152,11 +191,7 @@ function CreateStudio() {
                 >
                   <div
                     className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all ${
-                      step === s.id
-                        ? 'bg-navy text-cream'
-                        : step > s.id
-                        ? 'bg-gold text-white'
-                        : 'bg-navy/10 text-charcoal/40'
+                      step === s.id ? 'bg-navy text-cream' : step > s.id ? 'bg-gold text-white' : 'bg-navy/10 text-charcoal/40'
                     }`}
                   >
                     {step > s.id ? '✓' : s.id}
@@ -186,27 +221,31 @@ function CreateStudio() {
                 >
                   {step === 1 && (
                     <PhotoUpload
-                      onPhotoSelected={(file, preview) => {
-                        setUserPhoto(file);
-                        setPhotoPreview(preview);
-                      }}
+                      onPhotoSelected={(file, preview) => { setUserPhoto(file); setPhotoPreview(preview); }}
                       preview={photoPreview}
                     />
                   )}
                   {step === 2 && (
                     <FabricSelector
                       selected={fabricId}
-                      onSelect={(id, prompt, name) => {
-                        setFabricId(id);
-                        setFabricPrompt(prompt);
-                        setFabricName(name);
-                      }}
+                      onSelect={(id, prompt, name) => { setFabricId(id); setFabricPrompt(prompt); setFabricName(name); }}
+                      fabricPhoto={fabricPhoto}
+                      onFabricPhotoChange={(file, preview) => { setFabricPhoto(file); setFabricPhotoPreview(preview); }}
+                      fabricPhotoPreview={fabricPhotoPreview}
+                      customColor={customColor}
+                      customColorName={customColorName}
+                      onCustomColorChange={(color, name) => { setCustomColor(color); setCustomColorName(name); }}
+                      activeTab={fabricTab}
+                      onTabChange={(tab) => setFabricTab(tab)}
                     />
                   )}
                   {step === 3 && (
                     <StyleSelector
                       selected={kurtaStyle?.id || null}
                       onSelect={setKurtaStyle}
+                      styleRefPhoto={styleRefPhoto}
+                      onStyleRefPhotoChange={(file, preview) => { setStyleRefPhoto(file); setStyleRefPreview(preview); }}
+                      styleRefPreview={styleRefPreview}
                     />
                   )}
                   {step === 4 && (
@@ -229,7 +268,7 @@ function CreateStudio() {
               </AnimatePresence>
 
               {/* Navigation */}
-              <div className="flex justify-between mt-6">
+              <div className="flex justify-between items-center mt-6">
                 <button
                   onClick={() => setStep((s) => Math.max(1, s - 1))}
                   disabled={step === 1}
@@ -237,14 +276,26 @@ function CreateStudio() {
                 >
                   ← Back
                 </button>
+
                 {step < 5 && (
-                  <button
-                    onClick={() => setStep((s) => Math.min(5, s + 1))}
-                    disabled={!canGoNext()}
-                    className="px-6 py-3 bg-navy text-cream rounded-xl hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all font-medium border border-gold/20"
-                  >
-                    Continue →
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {/* Skip button for optional step 4 */}
+                    {step === 4 && (
+                      <button
+                        onClick={() => setStep(5)}
+                        className="px-5 py-3 text-charcoal/50 hover:text-navy text-sm transition-colors"
+                      >
+                        Skip Details →
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setStep((s) => Math.min(5, s + 1))}
+                      disabled={!canGoNext()}
+                      className="px-6 py-3 bg-navy text-cream rounded-xl hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all font-medium border border-gold/20"
+                    >
+                      Continue →
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -253,45 +304,42 @@ function CreateStudio() {
             <div className="glass rounded-2xl p-6 sticky top-24 h-fit">
               <h3 className="font-playfair text-lg font-bold text-navy mb-4">Your Selections</h3>
               <div className="space-y-3 text-sm">
-                <div className="flex items-start gap-3">
-                  <span className="w-5 text-center">📸</span>
-                  <div>
-                    <div className="text-xs text-charcoal/50 font-cormorant">Photo</div>
-                    <div className="text-navy font-medium">{userPhoto ? userPhoto.name : 'Not uploaded'}</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <span className="w-5 text-center">🎨</span>
-                  <div>
-                    <div className="text-xs text-charcoal/50 font-cormorant">Fabric</div>
-                    <div className="text-navy font-medium">{fabricName || 'Not selected'}</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <span className="w-5 text-center">{kurtaStyle?.icon || '👘'}</span>
-                  <div>
-                    <div className="text-xs text-charcoal/50 font-cormorant">Style</div>
-                    <div className="text-navy font-medium">{kurtaStyle?.name || 'Not selected'}</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <span className="w-5 text-center">✨</span>
-                  <div>
-                    <div className="text-xs text-charcoal/50 font-cormorant">Details</div>
-                    <div className="text-navy font-medium">
-                      {neckline.name} · {sleeve.name}
-                    </div>
-                  </div>
-                </div>
+                <SidebarRow icon="📸" label="Photo" value={userPhoto?.name || 'Not uploaded'} />
+                <SidebarRow
+                  icon="🎨"
+                  label="Fabric"
+                  value={activeFabricName || 'Not selected'}
+                  badge={fabricTab === 'upload' && fabricPhoto ? 'Uploaded' : fabricTab === 'custom' && customColor ? 'Custom' : undefined}
+                />
+                <SidebarRow
+                  icon={kurtaStyle?.icon || '👘'}
+                  label="Style"
+                  value={styleRefPhoto ? 'From reference photo' : (kurtaStyle?.name || 'Not selected')}
+                  badge={styleRefPhoto ? 'Reference' : undefined}
+                />
+                <SidebarRow icon="✨" label="Details" value={`${neckline.name} · ${sleeve.name}`} />
 
                 {photoPreview && (
                   <div className="mt-4 pt-4 border-t border-gold/20">
-                    <div className="text-xs text-charcoal/50 font-cormorant mb-2">Your Photo Preview</div>
-                    <img
-                      src={photoPreview}
-                      alt="Your photo"
-                      className="w-full rounded-xl object-cover max-h-48"
-                    />
+                    <p className="text-xs text-charcoal/50 font-cormorant mb-2">Your Photo</p>
+                    <img src={photoPreview} alt="Your photo" className="w-full rounded-xl object-cover max-h-48" />
+                  </div>
+                )}
+
+                {(fabricPhotoPreview || styleRefPreview) && (
+                  <div className="pt-3 border-t border-gold/10 space-y-2">
+                    {fabricPhotoPreview && (
+                      <div>
+                        <p className="text-xs text-charcoal/50 font-cormorant mb-1">Fabric Reference</p>
+                        <img src={fabricPhotoPreview} alt="Fabric ref" className="w-full rounded-lg object-cover max-h-24" />
+                      </div>
+                    )}
+                    {styleRefPreview && (
+                      <div>
+                        <p className="text-xs text-charcoal/50 font-cormorant mb-1">Style Reference</p>
+                        <img src={styleRefPreview} alt="Style ref" className="w-full rounded-lg object-cover max-h-24" />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -304,9 +352,32 @@ function CreateStudio() {
   );
 }
 
+function SidebarRow({ icon, label, value, badge }: { icon: string; label: string; value: string; badge?: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="w-5 text-center">{icon}</span>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-charcoal/50 font-cormorant">{label}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-navy font-medium text-sm truncate">{value}</div>
+          {badge && (
+            <span className="flex-shrink-0 text-xs px-1.5 py-0.5 rounded bg-gold/15 text-gold border border-gold/20">
+              {badge}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CreatePage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><div className="text-navy font-playfair text-2xl">Loading...</div></div>}>
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-navy font-playfair text-2xl">Loading...</div>
+      </div>
+    }>
       <CreateStudio />
     </Suspense>
   );
