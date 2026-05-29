@@ -29,7 +29,7 @@ export default function GeneratePreview({
   isLoading,
   error,
 }: Props) {
-  const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('medium');
+  const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('low');
 
   const summary = [
     { label: 'Style', value: selections.kurtaStyle?.name },
@@ -59,20 +59,33 @@ export default function GeneratePreview({
 
       {/* Quality Selector */}
       <div>
-        <h3 className="font-cormorant text-lg font-semibold text-gold mb-3">Quality</h3>
+        <div className="flex items-baseline justify-between mb-3">
+          <h3 className="font-cormorant text-lg font-semibold text-gold">Quality</h3>
+          <span className="text-xs text-charcoal/40">High uses portrait size · Low/Med use square</span>
+        </div>
         <div className="grid grid-cols-3 gap-3">
-          {(['low', 'medium', 'high'] as const).map((q) => (
+          {(
+            [
+              { q: 'low', size: '1024×1024', badge: 'Best Value' },
+              { q: 'medium', size: '1024×1024', badge: null },
+              { q: 'high', size: '1024×1536', badge: 'Portrait' },
+            ] as const
+          ).map(({ q, size, badge }) => (
             <button
               key={q}
               onClick={() => setQuality(q)}
-              className={`p-3 rounded-xl border-2 text-sm transition-all ${
-                quality === q
-                  ? 'border-gold bg-gold/5 font-semibold'
-                  : 'border-gold/20 hover:border-gold/40'
+              className={`p-3 rounded-xl border-2 text-sm transition-all relative ${
+                quality === q ? 'border-gold bg-gold/5 font-semibold' : 'border-gold/20 hover:border-gold/40'
               }`}
             >
-              <div className="font-medium capitalize">{q}</div>
+              {badge && (
+                <span className="absolute -top-2 left-1/2 -translate-x-1/2 text-[10px] bg-gold text-white px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                  {badge}
+                </span>
+              )}
+              <div className="font-medium capitalize mt-1">{q}</div>
               <div className="text-xs text-charcoal/50 mt-0.5">~${getCostEstimate(q).toFixed(3)}</div>
+              <div className="text-[10px] text-charcoal/30 mt-0.5">{size}</div>
             </button>
           ))}
         </div>

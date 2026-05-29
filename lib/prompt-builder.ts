@@ -44,6 +44,7 @@ The kurta must look TAILORED and FITTED to the person's body. Fabric texture, dr
 }
 
 export function getCostEstimate(quality: 'low' | 'medium' | 'high'): number {
-  const costs = { low: 0.006, medium: 0.053, high: 0.211 };
+  // gpt-image-2 at 1024×1024 (low/medium) and 1024×1536 (high only)
+  const costs = { low: 0.006, medium: 0.042, high: 0.167 };
   return costs[quality];
 }

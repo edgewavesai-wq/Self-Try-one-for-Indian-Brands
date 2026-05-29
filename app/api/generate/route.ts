@@ -3,6 +3,12 @@ import { buildPrompt } from '@/lib/prompt-builder';
 
 export const maxDuration = 60;
 
+// Size rules: portrait (1024x1536) is only billable at high quality.
+// Use square (1024x1024) for low/medium to avoid silent upcharge.
+function sizeFor(quality: string): string {
+  return quality === 'high' ? '1024x1536' : '1024x1024';
+}
+
 async function fileToBlob(file: File): Promise<Blob> {
   const buffer = Buffer.from(await file.arrayBuffer());
   return new Blob([buffer], { type: file.type || 'image/jpeg' });
@@ -20,22 +26,23 @@ export async function POST(req: NextRequest) {
     if (!selectionsRaw) return NextResponse.json({ error: 'Selections are required' }, { status: 400 });
 
     const selections = JSON.parse(selectionsRaw);
+    const quality: string = selections.quality || 'low';
     const prompt = buildPrompt(selections);
+    const size = sizeFor(quality);
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return NextResponse.json({ error: 'OpenAI API key not configured' }, { status: 500 });
 
-    // Build multipart form for images/edits — send reference images in order:
-    // [0] person photo (always), [1] fabric reference (if provided), [2] style reference (if provided)
+    // Send reference images in order: person (always), fabric (if uploaded), style (if uploaded)
     const editForm = new FormData();
     editForm.append('image[]', await fileToBlob(userPhoto), 'person.jpg');
     if (fabricPhoto) editForm.append('image[]', await fileToBlob(fabricPhoto), 'fabric.jpg');
     if (styleRefPhoto) editForm.append('image[]', await fileToBlob(styleRefPhoto), 'style.jpg');
     editForm.append('prompt', prompt);
-    editForm.append('model', 'gpt-image-1');
+    editForm.append('model', 'gpt-image-2');
     editForm.append('n', '1');
-    editForm.append('size', '1024x1536');
-    if (selections.quality) editForm.append('quality', selections.quality);
+    editForm.append('size', size);
+    editForm.append('quality', quality);
 
     const editRes = await fetch('https://api.openai.com/v1/images/edits', {
       method: 'POST',
@@ -43,18 +50,12 @@ export async function POST(req: NextRequest) {
       body: editForm,
     });
 
-    // Fallback to generations endpoint if edits fails (e.g. format mismatch)
+    // Fallback to generations endpoint if edits fails
     if (!editRes.ok) {
       const genRes = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: 'gpt-image-1',
-          prompt,
-          n: 1,
-          size: '1024x1536',
-          quality: selections.quality || 'medium',
-        }),
+        body: JSON.stringify({ model: 'gpt-image-2', prompt, n: 1, size, quality }),
       });
 
       const genData = await genRes.json();
@@ -65,19 +66,11 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      return NextResponse.json({
-        image: extractImage(genData.data?.[0]),
-        prompt,
-        cost: costFor(selections.quality),
-      });
+      return NextResponse.json({ image: extractImage(genData.data?.[0]), prompt, cost: costFor(quality) });
     }
 
     const editData = await editRes.json();
-    return NextResponse.json({
-      image: extractImage(editData.data?.[0]),
-      prompt,
-      cost: costFor(selections.quality),
-    });
+    return NextResponse.json({ image: extractImage(editData.data?.[0]), prompt, cost: costFor(quality) });
   } catch (error: unknown) {
     console.error('Generate error:', error);
     return NextResponse.json(
@@ -92,8 +85,8 @@ function extractImage(item: { url?: string; b64_json?: string } | undefined): st
   return item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : null);
 }
 
-function costFor(quality?: string): number {
+function costFor(quality: string): number {
   if (quality === 'low') return 0.006;
-  if (quality === 'high') return 0.211;
-  return 0.053;
+  if (quality === 'high') return 0.167;
+  return 0.042; // medium
 }
