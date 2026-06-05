@@ -1,0 +1,17 @@
+# Dependencies
+**/node_modules/
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# NestJS
+backend/dist/
+
+# Environment files (never commit secrets)
+**/.env
+**/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
